@@ -16,6 +16,9 @@
 #include <chrono>
 #include <streambuf>
 #include <sstream>
+#include <exception>
+#include <typeinfo>
+#include <stdexcept>
 using namespace std;
 using namespace date;
 using namespace rapidjson;
@@ -27,6 +30,15 @@ int random(int a, int b)
     else return a + rand() % (abs(a) + b);
 }
 
+Document documentFromFile(const string filePath) {
+    FILE* f = fopen(filePath.c_str(), "rb");
+    char buffer[100000];
+    FileReadStream streamForReadingClassTypesFile(f, buffer, sizeof(buffer));
+    Document d;
+    d.ParseStream(streamForReadingClassTypesFile);
+    return d; 
+}
+
 class MyClientClass : public SleepyDiscord::WebsocketppDiscordClient {
 
 public:
@@ -36,96 +48,101 @@ public:
     map<string, string> groupID{ {"932101", "42974d5d-ffca-11eb-8169-005056bc249c"},
                                   {"932102", "42974d59-ffca-11eb-8169-005056bc249c"},
                                   {"932103", "42974d55-ffca-11eb-8169-005056bc249c"} };
-
-
-    class wrongUserInput : public exception {};
+    std::unordered_map<
+        SleepyDiscord::Snowflake<SleepyDiscord::Channel>::RawType,
+        SleepyDiscord::Channel
+    > channels;
+    exception noSuchGroup;
     void onChannel(SleepyDiscord::Channel channel) {
+        channels.insert({ channel.ID, channel });
         if (channel.name.find("timetable") != std::string::npos) {
-            string helloMessage("Хей! Похоже, что этот канал был создан для того, чтобы я смог отправить сюда расписание! Если это так, то отправьте сюда команду !timetable или !расписание"); 
+            string helloMessage("It seems like this channel is made for me... If i'm write, send here !timetable"); 
             WebsocketppDiscordClient::sendMessage(channel.ID, helloMessage);
         }
         else return;
-
+    }
+    void onServer(SleepyDiscord::Server server) override { //called when server is available
+        for (SleepyDiscord::Channel& channel : server.channels) {
+            channels.insert({ channel.ID, channel });
+        }
+       
     }
     void onMessage(SleepyDiscord::Message message) override {
 
-        if (message.startsWith("!timetable-hel") || message.startsWith("!расписание-помощ")) {
-
-            // sendMessage(message.channelID, "Привет. Этот бот создан, чтобы отправлять расписание из tsu-intime в ваш discord-сервер.");
-             //sendMessage(message.channelID, "Сделайте следующее: \n1) Создайте текстовый канал(рекомендуемое название: <номер-группы>-расписание(без<>). \
-                                                 Пример: 932102-timetable).\n2) Отправьте команду !timetable или !расписание в этот канал");
+        if (message.startsWith("!timetable-help")) {
             WebsocketppDiscordClient::sendMessage(message.channelID, "Hello. This bot is created to send timetable from tsu-intime to your discord server.");
             WebsocketppDiscordClient::sendMessage(message.channelID, "Follow these steps: \n1) Create text channel(recommended name: <group-number>-timetable (without <>). \
                                             For example: 932102-timetable).\n2) Send !timetable command to this channel");
             return;
         }
         else if (message.startsWith("!расписание") || message.startsWith("!timetable")) {
-            FILE* fileForReadingCache932102 = fopen("C:\\timetableCache\\timetableCache932102.json", "rb");
-            char bufferForCache932102[100000];
-            FileReadStream streamForReadingCache932102(fileForReadingCache932102, bufferForCache932102, sizeof(bufferForCache932102));
-           
+            auto channel = channels.find(message.channelID);
+            string channelName(channel->second.name), groupName = channelName.substr(0,6);
+            if (channelName.find("timetable") == std::string::npos) {
+                sendMessage(message.channelID, "Please, *rename your channel correctly*(for more info do ***!timetable-help***).");
+            } else {
+                try {
 
-            Document currentTimetableFor932102;
-            currentTimetableFor932102.ParseStream(streamForReadingCache932102);
+                    Document privateRequestParameters = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\requestParameters.json");
+                    Document weekdayString = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\weekdaysJsonFile.json");
+                    Document classTypeString = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\classTypesJsonFile.json");
+                    if (groupID.find(groupName) == groupID.end()) { throw noSuchGroup; }
+                    else {
+                        string urlString = string(privateRequestParameters["1"].GetString()) + groupID[groupName]
+                            + string(privateRequestParameters["2"].GetString()) + string(privateRequestParameters["startingTime"].GetString()) +
+                            string(privateRequestParameters["3"].GetString()) + string(privateRequestParameters["endingTime"].GetString());
 
-            FILE* fileForClassTypes = fopen("C:\\timetableCache\\classTypesJsonFile.json", "rb");
-            char bufferForClassTypes[100000];
-            FileReadStream streamForReadingClassTypesFile(fileForClassTypes, bufferForClassTypes, sizeof(bufferForClassTypes));
-            Document classTypeString;
-            classTypeString.ParseStream(streamForReadingClassTypesFile);
-            
-            FILE* fileForWeekdays = fopen("C:\\timetableCache\\weekdaysJsonFile.json", "rb");
-            char bufferForWeekdays[100000];
-            FileReadStream streamForWeekdays(fileForWeekdays, bufferForWeekdays, sizeof(bufferForWeekdays));
-            Document weekdayString;
-            weekdayString.ParseStream(streamForWeekdays);
+                        auto response = cpr::Get(cpr::Url{ urlString });
+                        Document currentTimetableFor932102;
+                        currentTimetableFor932102.Parse(response.text.c_str());
+                        string stringBuffer;
+                        for (Value::ConstMemberIterator  weekDaysItr = currentTimetableFor932102["data"].MemberBegin();
+                            weekDaysItr != currentTimetableFor932102["data"].MemberEnd(); ++weekDaysItr) {
+                            string currentDayStringBuffer(weekDaysItr->name.GetString());
+                            auto currentDay = stoi(currentDayStringBuffer);
+                            auto sysTime = chrono::system_clock::from_time_t(currentDay);
+                            auto currentDayFormat = year_month_day(floor<days>(sysTime));
+                            auto weekdayOfCurrentDay = weekday(currentDayFormat);
+                            ostringstream sendingDateStream, weekdayStringStream;
+                            weekdayStringStream << weekdayOfCurrentDay;
+                            sendingDateStream << currentDayFormat;
+                            stringBuffer += "*" + sendingDateStream.str() + "*" + ". " + "***" + string(weekdayString[weekdayStringStream.str().c_str()].GetString()) + "***: \n";
 
-            string stringBuffer;
-            for (Value::ConstMemberIterator  weekDaysItr = currentTimetableFor932102["data"].MemberBegin();
-                weekDaysItr != currentTimetableFor932102["data"].MemberEnd(); ++weekDaysItr) {
-                string currentDayStringBuffer(weekDaysItr->name.GetString());
-                auto currentDay = stoi(currentDayStringBuffer);
-                auto sysTime = chrono::system_clock::from_time_t(currentDay);
-                auto currentDayFormat = year_month_day(floor<days>(sysTime));
-                auto weekdayOfCurrentDay = weekday(currentDayFormat); 
-                ostringstream sendingDateStream, weekdayStringStream; 
-                weekdayStringStream << weekdayOfCurrentDay;
-                sendingDateStream << currentDayFormat;
-                
-                stringBuffer += "*"+sendingDateStream.str()+"*" + ". " + "***" + string(weekdayString[weekdayStringStream.str().c_str()].GetString()) + "***: \n";
-              
-                if (!weekDaysItr->value["schedule"].Empty()) {
-                    for (Value::ConstValueIterator scheduleItr = weekDaysItr->value["schedule"].Begin();
-                        scheduleItr != weekDaysItr->value["schedule"].End(); ++scheduleItr) {
-                        string classTitle(((*scheduleItr)["title"].GetString())),
-                            startingTime(((*scheduleItr)["starts"].GetString())),
-                            endingTime(((*scheduleItr)["ends"].GetString())),
-                            teacherName(((*scheduleItr)["teacher"]["name"].GetString())),
-                            auditoryName(((*scheduleItr)["auditory"]["name"].GetString())),
-                            classType(classTypeString[((*scheduleItr)["type"].GetString())].GetString());
-                          
-                       
-                          
-                        stringBuffer += "```css\n[" + startingTime + "] - [" + endingTime + "]" + "; " + auditoryName + "\n" + classTitle +
-                             " (" + classType  +") \n"+ teacherName +"\n```";
+                                if (!weekDaysItr->value["schedule"].Empty()) {
+                                for (Value::ConstValueIterator scheduleItr = weekDaysItr->value["schedule"].Begin();
+                                    scheduleItr != weekDaysItr->value["schedule"].End(); ++scheduleItr) {
+
+                                    string classTitle(((*scheduleItr)["title"].GetString())),
+                                        startingTime(((*scheduleItr)["starts"].GetString())),
+                                        endingTime(((*scheduleItr)["ends"].GetString())),
+                                        teacherName(((*scheduleItr)["teacher"]["name"].GetString())),
+                                        auditoryName(((*scheduleItr)["auditory"]["name"].GetString())),
+                                        classType(classTypeString[(*scheduleItr)["type"].GetString()].GetString());
+
+
+
+                                    stringBuffer += "```css\n[" + startingTime + "] - [" + endingTime + "]" + "; " + auditoryName + "\n" + classTitle +
+                                        " (" + classType + ") \n" + teacherName + "\n```";
+                                }
+                            }
+                            else stringBuffer += "```css\n[NO CLASSES THIS DAY =)]\n```";
+                            sendMessage(message.channelID, stringBuffer + "\n", SleepyDiscord::Sync);
+                            sleep(1000);
+                            stringBuffer.clear();
+                        }
                     }
                 }
-                else stringBuffer += "```css\n[NO CLASSES THIS DAY =)]\n```"; 
-                
-                WebsocketppDiscordClient::sendMessage(message.channelID, stringBuffer + "\n");
-                stringBuffer.clear();
+                catch (exception& e) {
+                    sendMessage(message.channelID, "*Had some problems...* Please, *contact my creator* ***(discord: w1resh4rk#1676)***.");
+                    cout << e.what() << endl; 
+                }
+                return;
             }
-            fclose(fileForReadingCache932102);
-            fclose(fileForClassTypes);
-            return;
         }
     }
 };
     int main() {
-
-
-
-
-        MyClientClass client("ODkxOTQzODA4NTkyNDA4NTk2.YVFtZw.Kl-iZdleIwacgvxmEA1Y0yBz4Zc", SleepyDiscord::USER_CONTROLED_THREADS);
+        Document privateBotData = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\privateBotData.json" );
+        MyClientClass client(privateBotData["token"].GetString(), SleepyDiscord::USER_CONTROLED_THREADS);
         client.run();
     }
