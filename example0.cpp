@@ -39,6 +39,13 @@ Document documentFromFile(const string filePath) {
     return d; 
 }
 
+Document documentFromRequest(const string urlString) {
+    cpr::Response response = cpr::Get(cpr::Url{ urlString });
+    Document d;
+    d.Parse(response.text.c_str());
+    return d;
+}
+
 class MyClientClass : public SleepyDiscord::WebsocketppDiscordClient {
 
 public:
@@ -52,7 +59,7 @@ public:
         SleepyDiscord::Snowflake<SleepyDiscord::Channel>::RawType,
         SleepyDiscord::Channel
     > channels;
-    exception noSuchGroup;
+    class noSuchGroup :public exception {} noSuchGroupForReal;
     void onChannel(SleepyDiscord::Channel channel) {
         channels.insert({ channel.ID, channel });
         if (channel.name.find("timetable") != std::string::npos) {
@@ -70,14 +77,13 @@ public:
     void onMessage(SleepyDiscord::Message message) override {
 
         if (message.startsWith("!timetable-help")) {
-            WebsocketppDiscordClient::sendMessage(message.channelID, "Hello. This bot is created to send timetable from tsu-intime to your discord server.");
-            WebsocketppDiscordClient::sendMessage(message.channelID, "Follow these steps: \n1) Create text channel(recommended name: <group-number>-timetable (without <>). \
-                                            For example: 932102-timetable).\n2) Send !timetable command to this channel");
+            WebsocketppDiscordClient::sendMessage(message.channelID, "Hello. This bot is created to **send timetable from tsu-intime to your discord server.**");
+            WebsocketppDiscordClient::sendMessage(message.channelID, "Follow these steps: \n***1) Create text channel*** *(recommended name: <group-number>-timetable (without <>). For example: ***932102-timetable***)*.\n*2) Send ***!timetable*** command to this channel*");
             return;
         }
         else if (message.startsWith("!расписание") || message.startsWith("!timetable")) {
             auto channel = channels.find(message.channelID);
-            string channelName(channel->second.name), groupName = channelName.substr(0,6);
+            string channelName(channel->second.name), groupNumber = channelName.substr(0,6);
             if (channelName.find("timetable") == std::string::npos) {
                 sendMessage(message.channelID, "Please, *rename your channel correctly*(for more info do ***!timetable-help***).");
             } else {
@@ -86,18 +92,17 @@ public:
                     Document privateRequestParameters = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\requestParameters.json");
                     Document weekdayString = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\weekdaysJsonFile.json");
                     Document classTypeString = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\classTypesJsonFile.json");
-                    if (groupID.find(groupName) == groupID.end()) { throw noSuchGroup; }
-                    else {
-                        string urlString = string(privateRequestParameters["1"].GetString()) + groupID[groupName]
+                    Document groupID = documentFromFile("C:\\Users\\79138\\projects\\TsuTimeTableBot\\jsonPrivateFiles\\groupID.json");
+                    if (!groupID.HasMember(groupNumber.c_str())) {
+                        throw noSuchGroupForReal; 
+                    } else {
+                        string apiRequestUrlString = string(privateRequestParameters["1"].GetString()) + string(groupID[groupNumber.c_str()].GetString())
                             + string(privateRequestParameters["2"].GetString()) + string(privateRequestParameters["startingTime"].GetString()) +
                             string(privateRequestParameters["3"].GetString()) + string(privateRequestParameters["endingTime"].GetString());
-
-                        auto response = cpr::Get(cpr::Url{ urlString });
-                        Document currentTimetableFor932102;
-                        currentTimetableFor932102.Parse(response.text.c_str());
+                        Document currentTimetable = documentFromRequest(apiRequestUrlString);
                         string stringBuffer;
-                        for (Value::ConstMemberIterator  weekDaysItr = currentTimetableFor932102["data"].MemberBegin();
-                            weekDaysItr != currentTimetableFor932102["data"].MemberEnd(); ++weekDaysItr) {
+                        for (Value::ConstMemberIterator  weekDaysItr = currentTimetable["data"].MemberBegin();
+                            weekDaysItr != currentTimetable["data"].MemberEnd(); ++weekDaysItr) {
                             string currentDayStringBuffer(weekDaysItr->name.GetString());
                             auto currentDay = stoi(currentDayStringBuffer);
                             auto sysTime = chrono::system_clock::from_time_t(currentDay);
@@ -131,6 +136,9 @@ public:
                             stringBuffer.clear();
                         }
                     }
+                }
+                catch(noSuchGroup) {
+                    sendMessage(message.channelID, "*I'm sorry,  i* ***haven't your group in the group list***. Please, *contact my creator* ***(discord: w1resh4rk#1676)***.");
                 }
                 catch (exception& e) {
                     sendMessage(message.channelID, "*Had some problems...* Please, *contact my creator* ***(discord: w1resh4rk#1676)***.");
