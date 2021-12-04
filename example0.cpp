@@ -22,31 +22,35 @@
 #include <stdexcept>
 #include "rapidjson/filewritestream.h"
 
+#define SECONDS_IN_HOUR 3600
+#define HOURS_IN_DAY 24
+#define GAP 31
+#define NUMBER_OF_SUNDAY 7
+
 
 using namespace std;
 using namespace chrono;
 using namespace rapidjson;
 using namespace date;
 
-int random(int a, int b)
-{
-    srand(time(NULL));
-    if (a > 0) return a + rand() % (b - a);
-    else return a + rand() % (abs(a) + b);
-}
-
 Document documentFromFile(const string filePath) {
+    
     FILE* f = fopen(filePath.c_str(), "r");
+    
     char buffer[100000];
+    
     if (f == NULL) {
-    	cout << "Не смогли открыть файл" << filePath << endl;
+    	cout << "Не смогли открыть файл " << filePath << endl;
     	exit(1);
     }
+    
     FileReadStream streamForReadingClassTypesFile(f, buffer, sizeof(buffer));
 
     Document d;
     d.ParseStream(streamForReadingClassTypesFile);
+    
     fclose(f);
+    
     return d; 
 }
 
@@ -65,14 +69,13 @@ public:
         SleepyDiscord::Channel
     > channels;
 
-    class noSuchGroup :public exception {} noSuchGroupForReal;
-
-    void onChannel(SleepyDiscord::Channel channel) {
+    void onChannel(SleepyDiscord::Channel channel) { //called when new channel created
 
         channels.insert({ channel.ID, channel });
 
         if (channel.name.find("timetable") != std::string::npos) {
             string helloMessage("It seems like this channel is made for me... If i'm write, send here !timetable"); 
+            
             WebsocketppDiscordClient::sendMessage(channel.ID, helloMessage);
         }
 
@@ -80,13 +83,14 @@ public:
     }
 
     void onServer(SleepyDiscord::Server server) override { //called when server is available
+        
         for (SleepyDiscord::Channel& channel : server.channels) {
             channels.insert({ channel.ID, channel });
         }
        
     }
 
-    void onMessage(SleepyDiscord::Message message) override {
+    void onMessage(SleepyDiscord::Message message) override { //called on any message
 
         if (message.startsWith("!timetable-help")) {
 
@@ -99,15 +103,17 @@ public:
 
             return;
         }
-        else if (message.startsWith("!����������") || message.startsWith("!timetable")) {
+        else if (message.startsWith("!timetable")) {
 
             auto channel = channels.find(message.channelID);
 
             string channelName(channel->second.name), groupNumber = channelName.substr(0,6);
 
             if (channelName.find("timetable") == std::string::npos) {
+                
                 sendMessage(message.channelID,
                     "Please, *rename your channel correctly*(for more info do ***!timetable-help***).");
+                
             } else {
                 try {
 
@@ -121,16 +127,17 @@ public:
                     Document groupID = documentFromFile("/home/ec/projects/TsuTimetableBot/jsonPrivateFiles/groupID.json");
 
                     if (!groupID.HasMember(groupNumber.c_str())) {
-                        throw noSuchGroupForReal; 
+                        sendMessage(message.channelID,
+                        "Don't have such group in list."
                     } else {
-
+                        //converting human time in time since epoch for HTTP request parameters begin
                         auto dp = floor<days>(system_clock::now());
                         auto ymd = year_month_day{ dp };
                         auto iso = iso_week::year_weeknum_weekday{ ymd };
 
                         iso_week::year_weeknum_weekday* beginningWeekDate, * endingWeekDate;
 
-                        if ((unsigned int)iso.weekday() != 7) {
+                        if ((unsigned int)iso.weekday() != NUMBER_OF_SUNDAY) {
 
                             beginningWeekDate =
                                 new iso_week::year_weeknum_weekday(iso.year(), --iso.weeknum(), weekday(7));
@@ -150,23 +157,27 @@ public:
                         }
 
                         string beginningWeekDateString = to_string((((sys_days)
-                            (*beginningWeekDate)).time_since_epoch()).count() * 3600 * 24 + 31 * 3600);
+                            (*beginningWeekDate)).time_since_epoch()).count() * SECONDS_IN_HOUR * HOURS_IN_DAY + GAP * SECONDS_IN_HOUR);
 
                         string endingWeekDateString = to_string((((sys_days)
-                            (*endingWeekDate)).time_since_epoch()).count() * 3600 * 24 + 31 * 3600 - 1);
-
+                            (*endingWeekDate)).time_since_epoch()).count() * SECONDS_IN_HOUR * HOURS_IN_DAY + GAP * SECONDS_IN_HOUR - 1);
+                        //converting end 
+                        
+                        //making request url string
                         string apiRequestUrlString = string(privateRequestParameters["1"].GetString()) +
                             string(groupID[groupNumber.c_str()].GetString())
                                 + string(privateRequestParameters["2"].GetString()) + beginningWeekDateString +
                                         string(privateRequestParameters["3"].GetString()) + endingWeekDateString;
-
+                        
+                        //doing request (got JSON)
                         cpr::Response response = cpr::Get(cpr::Url{ apiRequestUrlString });
 
                         Document currentTimetable;
                         currentTimetable.Parse(response.text.c_str());
                        
                         string stringBuffer;
-
+                        
+                        //beginning of parsing JSON
                         for (Value::ConstMemberIterator  weekDaysItr = currentTimetable["data"].MemberBegin();
                                weekDaysItr != currentTimetable["data"].MemberEnd(); ++weekDaysItr) {
 
@@ -214,9 +225,6 @@ public:
 
                         }
                     }
-                }
-                catch(noSuchGroup) {
-                    sendMessage(message.channelID, "*I'm sorry,  i* ***haven't your group in the group list***. Please, *contact my creator* ***(discord: w1resh4rk#1676)***.");
                 }
                 catch (exception& e) {
                     sendMessage(message.channelID, "*Had some problems...* Please, *contact my creator* ***(discord: w1resh4rk#1676)***.");
